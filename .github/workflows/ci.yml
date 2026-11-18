@@ -12,6 +12,7 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: cargo test --release
+      - run: cargo build --release
       - name: Benchmark smoke test
         # Shared runners are too noisy to compare against a fixed baseline;
         # this checks the whole pipeline works and keeps the numbers.
