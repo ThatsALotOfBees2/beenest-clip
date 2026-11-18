@@ -1,3 +1,4 @@
+mod bench;
 mod ffmpeg;
 mod hotkey;
 mod ring;
@@ -45,6 +46,9 @@ enum Cmd {
     Status,
     /// List the encoders that work on this machine.
     Encoders,
+    /// Measure what recording costs: CPU, memory, dropped frames, the
+    /// slowdown of a CPU-bound workload, and save latency.
+    Bench(bench::BenchArgs),
 }
 
 #[derive(Args)]
@@ -101,6 +105,38 @@ struct App {
     encoder: &'static str,
     buffer_secs: u64,
     started: Instant,
+    progress: Mutex<Progress>,
+}
+
+/// Encoder counters FFmpeg reports about once a second.
+#[derive(Default, Clone, Copy)]
+struct Progress {
+    frames: u64,
+    dup_frames: u64,
+    drop_frames: u64,
+    speed: f32,
+}
+
+impl Progress {
+    /// Take one `key=value` line of FFmpeg's `-progress` output.
+    /// Returns false if the line is not progress output.
+    fn update(&mut self, line: &str) -> bool {
+        let Some((key, value)) = line.split_once('=') else {
+            return false;
+        };
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+            return false;
+        }
+        let value = value.trim();
+        match key {
+            "frame" => self.frames = value.parse().unwrap_or(self.frames),
+            "dup_frames" => self.dup_frames = value.parse().unwrap_or(self.dup_frames),
+            "drop_frames" => self.drop_frames = value.parse().unwrap_or(self.drop_frames),
+            "speed" => self.speed = value.trim_end_matches('x').parse().unwrap_or(self.speed),
+            _ => {}
+        }
+        true
+    }
 }
 
 fn main() {
@@ -113,6 +149,7 @@ fn main() {
         }
         Cmd::Status => request(cli.port, "status"),
         Cmd::Encoders => encoders(cli.ffmpeg),
+        Cmd::Bench(args) => bench::run(&cli.ffmpeg, args),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
@@ -166,16 +203,22 @@ fn run(ffmpeg: String, port: u16, args: RunArgs) -> Result<()> {
         encoder: encoder.name(),
         buffer_secs: secs,
         started: Instant::now(),
+        progress: Mutex::new(Progress::default()),
     });
 
     let mut child = cfg.spawn_recorder(encoder)?;
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            eprintln!("ffmpeg: {line}");
-        }
-    });
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if !app.progress.lock().unwrap().update(&line) {
+                    eprintln!("ffmpeg: {line}");
+                }
+            }
+        });
+    }
 
     println!(
         "beenest-clip: {capture:?} capture, {} at {} fps / {} kbit/s, {secs}s buffer ({} MB)",
@@ -330,6 +373,7 @@ fn report(result: Result<String>) {
 fn status(app: &App) -> String {
     let now = Instant::now();
     let s = app.buffer.lock().unwrap().ring.stats(now);
+    let p = *app.progress.lock().unwrap();
     let uptime = now.duration_since(app.started).as_secs_f64();
     let kbps = if s.buffered.as_secs_f64() > 0.0 {
         s.bytes as f64 * 8.0 / 1000.0 / s.buffered.as_secs_f64()
@@ -338,13 +382,39 @@ fn status(app: &App) -> String {
     };
     format!(
         "encoder: {}\nuptime: {uptime:.0}s\nbuffered: {:.1}s in {} keyframe segments\n\
-         buffer use: {:.1} of {:.1} MB\nmeasured bitrate: {kbps:.0} kbit/s\ntotal encoded: {:.1} MB",
+         buffer use: {:.1} of {:.1} MB\nmeasured bitrate: {kbps:.0} kbit/s\ntotal encoded: {:.1} MB\n\
+         frames encoded: {} ({} duplicated, {} dropped), speed {:.2}x",
         app.encoder,
         s.buffered.as_secs_f64(),
         s.segments,
         s.bytes as f64 / 1e6,
         s.capacity as f64 / 1e6,
         s.total_written as f64 / 1e6,
+        p.frames,
+        p.dup_frames,
+        p.drop_frames,
+        p.speed,
+    )
+}
+
+/// The same figures as `status`, as `key=value` lines for tools.
+fn stats(app: &App) -> String {
+    let now = Instant::now();
+    let s = app.buffer.lock().unwrap().ring.stats(now);
+    let p = *app.progress.lock().unwrap();
+    format!(
+        "encoder={}\nuptime_secs={:.3}\nbuffered_secs={:.3}\nbuffer_bytes={}\ncapacity_bytes={}\n\
+         total_bytes={}\nframes={}\ndup_frames={}\ndrop_frames={}\nspeed={}",
+        app.encoder,
+        now.duration_since(app.started).as_secs_f64(),
+        s.buffered.as_secs_f64(),
+        s.bytes,
+        s.capacity,
+        s.total_written,
+        p.frames,
+        p.dup_frames,
+        p.drop_frames,
+        p.speed,
     )
 }
 
@@ -368,13 +438,14 @@ fn serve(app: &App, mut conn: TcpStream) {
             },
         },
         Some("status") => status(app),
+        Some("stats") => stats(app),
         _ => "error: unknown command".to_string(),
     };
     let _ = writeln!(conn, "{reply}");
 }
 
-/// Client side: send a command to the running recorder and print the reply.
-fn request(port: u16, command: &str) -> Result<()> {
+/// Client side: send a command to the running recorder and return the reply.
+pub(crate) fn send(port: u16, command: &str) -> Result<String> {
     let mut conn = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .context("beenest-clip is not running (start it with `beenest-clip run`)")?;
     writeln!(conn, "{command}")?;
@@ -384,7 +455,11 @@ fn request(port: u16, command: &str) -> Result<()> {
     if let Some(msg) = reply.strip_prefix("error: ") {
         bail!("{msg}");
     }
-    println!("{reply}");
+    Ok(reply.to_string())
+}
+
+fn request(port: u16, command: &str) -> Result<()> {
+    println!("{}", send(port, command)?);
     Ok(())
 }
 

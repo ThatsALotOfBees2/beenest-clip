@@ -214,6 +214,10 @@ impl Settings {
         cmd.args(self.video_args(enc, gpu_frames))
             // Flush every packet so the newest frames are in our buffer, not
             // in FFmpeg's, at the moment the user asks for a clip.
+            // Constant frame rate: a frame captured too late is repeated and
+            // counted as duplicated, which is how we detect capture falling
+            // behind. Progress counters go to stderr once a second.
+            .args(["-fps_mode", "cfr", "-progress", "pipe:2", "-stats_period", "1"])
             .args(["-f", "mpegts", "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0", "pipe:1"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

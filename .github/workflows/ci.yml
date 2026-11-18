@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: cargo test --release
+      - name: Benchmark smoke test
+        # Shared runners are too noisy to compare against a fixed baseline;
+        # this checks the whole pipeline works and keeps the numbers.
+        run: ./target/release/beenest-clip bench --duration 5 --json bench.json -- --capture test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-linux
+          path: bench.json
+
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --release
