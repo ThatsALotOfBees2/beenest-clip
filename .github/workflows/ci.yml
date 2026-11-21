@@ -30,3 +30,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo test --release
+      - run: cargo build --release
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: beenest-clip-${{ runner.os }}
+          path: |
+            target/release/beenest-clip
+            target/release/beenest-clip-app
+            target/release/beenest-clip.exe
+            target/release/beenest-clip-app.exe
+          if-no-files-found: error

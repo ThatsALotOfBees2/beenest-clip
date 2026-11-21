@@ -44,6 +44,8 @@ enum Cmd {
     },
     /// Show what the running recorder is holding.
     Status,
+    /// Stop the running recorder.
+    Quit,
     /// List the encoders that work on this machine.
     Encoders,
     /// Measure what recording costs: CPU, memory, dropped frames, the
@@ -140,7 +142,8 @@ impl Progress {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.ffmpeg = ffmpeg::locate(cli.ffmpeg);
     let result = match cli.command {
         Cmd::Run(args) => run(cli.ffmpeg, cli.port, args),
         Cmd::Save { seconds } => {
@@ -148,6 +151,7 @@ fn main() {
             request(cli.port, &format!("save {arg}"))
         }
         Cmd::Status => request(cli.port, "status"),
+        Cmd::Quit => request(cli.port, "quit"),
         Cmd::Encoders => encoders(cli.ffmpeg),
         Cmd::Bench(args) => bench::run(&cli.ffmpeg, args),
     };
@@ -186,6 +190,7 @@ fn run(ffmpeg: String, port: u16, args: RunArgs) -> Result<()> {
     if capture == Capture::X11grab && std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v == "wayland") {
         eprintln!("warning: this is a Wayland session; X11 capture will only see XWayland windows");
     }
+    ffmpeg::check_installed(&cfg.ffmpeg)?;
     let encoder = cfg.pick_encoder()?;
 
     // Sized for the buffer plus one keyframe interval (a clip starts on the
@@ -439,6 +444,13 @@ fn serve(app: &App, mut conn: TcpStream) {
         },
         Some("status") => status(app),
         Some("stats") => stats(app),
+        Some("quit") => {
+            let _ = writeln!(conn, "stopping");
+            let _ = conn.flush();
+            println!("stopped by request");
+            // FFmpeg exits by itself once its output pipe closes.
+            std::process::exit(0);
+        }
         _ => "error: unknown command".to_string(),
     };
     let _ = writeln!(conn, "{reply}");

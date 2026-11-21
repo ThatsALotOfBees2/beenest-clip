@@ -99,7 +99,7 @@ impl Settings {
     }
 
     fn base(&self) -> Command {
-        let mut cmd = Command::new(&self.ffmpeg);
+        let mut cmd = command(&self.ffmpeg);
         cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-nostats"]);
         cmd
     }
@@ -232,10 +232,61 @@ impl Settings {
     }
 }
 
+/// A `Command` for FFmpeg that never opens a console window, even when
+/// this process has none (as under the background app on Windows).
+pub fn command(program: &str) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// Use an `ffmpeg` sitting next to our own executable, if there is one,
+/// so a downloaded folder works without installing FFmpeg system-wide.
+pub fn locate(requested: String) -> String {
+    if requested != "ffmpeg" {
+        return requested;
+    }
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX))));
+    match bundled {
+        Some(path) if path.is_file() => path.to_string_lossy().into_owned(),
+        _ => requested,
+    }
+}
+
+/// Fail early, with a useful message, if FFmpeg cannot be run at all.
+pub fn check_installed(ffmpeg: &str) -> Result<()> {
+    let ok = command(ffmpeg)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        let hint = if cfg!(windows) {
+            "put ffmpeg.exe next to beenest-clip.exe, or install it with `winget install ffmpeg`"
+        } else if cfg!(target_os = "macos") {
+            "install it with `brew install ffmpeg`"
+        } else {
+            "install it with your package manager, e.g. `sudo apt install ffmpeg`"
+        };
+        bail!("FFmpeg was not found ({ffmpeg}); {hint}");
+    }
+    Ok(())
+}
+
 /// Wrap an MPEG-TS byte stream into an MP4 without re-encoding.
 pub fn mux_to_mp4(ffmpeg: &str, ts: Vec<u8>, out: &Path) -> Result<()> {
     let part = out.with_extension("mp4.part");
-    let mut child = Command::new(ffmpeg)
+    let mut child = command(ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0"])
         .args(["-c", "copy", "-movflags", "+faststart", "-f", "mp4"])
         .arg(&part)

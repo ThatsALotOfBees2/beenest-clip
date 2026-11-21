@@ -21,6 +21,40 @@ Only compressed data passes through the Rust process, which sits at roughly
 - Rust (stable) to build
 - `ffmpeg` 5.1 or newer on your `PATH` (or pass `--ffmpeg <path>` / set `BEENEST_FFMPEG`)
 
+## Background app
+
+`beenest-clip-app` is the double-click version. It opens no window: it starts
+recording straight away and sits in the background, with a tray icon on
+Windows and macOS.
+
+1. Put `beenest-clip-app`, `beenest-clip` and (optionally) `ffmpeg` in the
+   same folder. Windows: `beenest-clip-app.exe`, `beenest-clip.exe`,
+   `ffmpeg.exe`. Without a bundled `ffmpeg` it uses the one on your `PATH`.
+2. Start `beenest-clip-app`.
+3. Press **Alt+F10** to save the last 30 seconds. A notification shows the
+   file name; clips go to `Videos/Beenest Clips`.
+
+The tray menu has: Save clip now, Open clips folder, Settings…, Restart
+recorder, Open log, Quit. Hovering the icon shows whether it is recording;
+the icon turns grey if recording stopped, with a message saying why.
+
+Settings live in a file created on first run, with every option explained:
+
+| OS | Settings and log |
+|---|---|
+| Windows | `%APPDATA%\beenest-clip\` |
+| macOS | `~/Library/Application Support/beenest-clip/` |
+| Linux | `~/.config/beenest-clip/` |
+
+Change `seconds`, `hotkey`, `clips_dir`, quality or audio there, then choose
+**Restart recorder**.
+
+Ready-built Windows and macOS files are attached to each CI run on GitHub
+(Actions tab, open a run, *Artifacts*).
+
+On Linux there is no tray icon (building one needs GTK development
+packages): the app runs in the background until `beenest-clip quit`.
+
 ## Usage
 
 ```sh
@@ -32,6 +66,7 @@ beenest-clip run --seconds 120 --bitrate 20000 --out ~/Videos/clips
 beenest-clip save                     # from another terminal: save the buffer
 beenest-clip save --seconds 30        # save only the last 30 s
 beenest-clip status                   # buffer, bitrate, frames encoded / duplicated
+beenest-clip quit                     # stop the recorder
 beenest-clip encoders                 # which encoders work on this machine
 ```
 
@@ -120,8 +155,13 @@ Prototype. Tested end to end on Linux (X11 capture, x264, audio, hotkey,
 buffer wraparound). The Windows and macOS code paths compile but have not
 been run on those systems, and no hardware encoder has been exercised yet.
 
+The background app was tested on Linux (start, hotkey save, quit, a second
+copy refusing to start, crash and missing-FFmpeg messages). Its tray icon,
+notifications and message boxes on Windows and macOS have not been run.
+
 Not built yet: native Wayland capture, native Windows audio loopback,
-per-game detection, a UI, and GPU metrics in the benchmark.
+per-game detection, start at login, a settings window, and GPU metrics in
+the benchmark.
 
 The control port (`--port`, default 47810) listens on localhost only, but any
 local program can use it to trigger a save.
